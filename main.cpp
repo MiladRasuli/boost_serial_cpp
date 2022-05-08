@@ -6,7 +6,7 @@
 
 int main()
 {
-	//std::array<char, MAX_RCV_SIZE> rcv_buf;
+	std::array<char, MAX_RCV_SIZE> rcv_buf;
 	std::string message{"Hello from serial!!\r\n"};
 	std::string com{"COM10"};	
 	auto bud{ boost::asio::serial_port_base::baud_rate{ 9600 } };
@@ -17,10 +17,13 @@ int main()
 	//the settings of the serial set on 
 	// stop bit 1, parity none, baud rate 9600, data 8bit , COM10
 	std::thread{ [&] {io_.run(); } }.detach();
-	
+	ser.async_read_some(boost::asio::buffer(rcv_buf.data(),MAX_RCV_SIZE), [&](auto err,auto size) {
+		std::cout << std::string{ rcv_buf.data(),size } << "\t" << size << "\r\n";
+		return;
+		});
 	ser.write_some(boost::asio::buffer(message.data(), message.length()));
 
-	//std::cin.get();
+	std::cin.get();
 	ser.close();
 	return EXIT_SUCCESS;
 }
