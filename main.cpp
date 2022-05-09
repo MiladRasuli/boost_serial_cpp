@@ -15,23 +15,33 @@
 #include <boost/system/error_code.hpp>
 #include <boost/system/system_error.hpp>
 #include <boost/bind.hpp>
-//#include <boost/thread.hpp>
+#include <boost/thread.hpp>
 #include <thread>
+#include <memory>
 
+using rcv_callback_type = void(__stdcall*)(char*, uint32_t);
+using err_callback_type = void(__stdcall*)(const char*);
 class Serial {
 
 private:
     char read_msg_[512];
     boost::asio::io_service io_;
     boost::asio::serial_port ser;
+    std::thread thread_{};
     std::string com{};
-    uint32_t baud{9600};
+    uint32_t baud{ 9600 };
+    rcv_callback_type rcv_function = [](char*, uint32_t) -> void {};
+    err_callback_type err_function = [](const char*) -> void {};
     void handler(const boost::system::error_code& error, size_t bytes_transferred)
     {
-        read_msg_[bytes_transferred] = 0;
-        std::cout << bytes_transferred << " bytes: " << read_msg_ << std::endl;
+        if (errno) {
 
+            err_function(error.message().data());
+            return;
+        }
         read_some();
+        read_msg_[bytes_transferred] = 0;
+        rcv_function(read_msg_, bytes_transferred);
     }
     void read_some()
     {
@@ -44,12 +54,13 @@ private:
 public:
     ~Serial()
     {
-        if(ser.is_open())
+        if (ser.is_open())
             ser.close();
+        exit(0);
     }
 
-    Serial(const std::string dev_name,uint32_t baud_rate) :
-        io_(), ser(io_), com{ dev_name }, baud{baud_rate}
+    Serial(const std::string dev_name, uint32_t baud_rate) :
+        io_{}, ser(io_), com{ dev_name }, baud{ baud_rate }
     {
         /*
               port.set_option( boost::asio::serial_port_base::parity() );	// default none
@@ -59,17 +70,19 @@ public:
         read_some();
 
         // run the IO service as a separate thread, so the main thread can do others
-        std::thread t( boost::bind(&boost::asio::io_service::run, &io_) );
+        std::thread t([this] {io_.run(); });
         t.detach();
     }
     auto start() -> int32_t {
         try
         {
             ser.open(com);
-            ser.set_option( boost::asio::serial_port_base::baud_rate( baud ) );
+            ser.set_option(boost::asio::serial_port_base::baud_rate(baud));
         }
-        catch (const std::exception&)
+        catch (const std::exception&err)
         {
+            
+            err_function(err.what());
             return 0;
         }
         return 1;
@@ -77,10 +90,14 @@ public:
     auto stop() -> int32_t {
         try
         {
+            rcv_function = [](auto, auto)->void {};
+            err_function = [](auto)->void {};
             ser.cancel();
+            ser.close();
         }
-        catch (const std::exception&)
+        catch (const std::exception&err )
         {
+            err_function(err.what());
             return 0;
         }
         return 1;
@@ -89,31 +106,62 @@ public:
     {
         ser.write_some(boost::asio::buffer(msg, msg.length()));
     }
+    auto on_receive(rcv_callback_type&& cb) ->void {
+        rcv_function = std::move(cb);
+    }
+    auto on_error(err_callback_type&& cb) ->void {
+        err_function = std::move(cb);
+    }
 };
 
 /* serial <devicename> */
+auto rcv_callback(char* msg, uint32_t len) ->void {
+    std::cout << msg << "\t" << len << "\n";
+}
+/* serial <devicename> */
+auto err_callback(const char* msg) ->void {
+    std::cout << msg << "\n";
+}
 
-int main(/*int argc, char* argv[]*/)
+int main()
 {
-    Serial s("COM10",9600);
-    s.start();
-    s.write("hello serial!!");
-    // wait some
-    Sleep(10);
-    std::cin.get();
-    s.stop();
-    Sleep(10);
-    s.start();
-    s.write("Hello serial again!!\r\n");
-    std::cin.get();
-    s.stop();
-    Sleep(10);
-    s.start();
-    s.write("Hello serial again3!!\r\n");
-    std::cin.get();
-    std::cin.get();
+    //ser->write("hello serial!!");
 
-    s.stop();
+    bool is_open{ false };
+    //std::unique_ptr<Serial>ser{nullptr};
+    //std::unique_ptr<boost::asio::io_service> io_{new };
+    //boost::asio::io_service io_{};
+    Serial ser{ "COM10",9600 };
+    // ser.reset(new Serial(&io_, "COM10", 9600));
+    std::string command{};
+    do {
+        std::cin >> command;
+
+        if (command == "start") {
+            std::cout << "start.\n";
+
+            ser.on_receive(rcv_callback);
+            ser.on_error(err_callback);
+            ser.start();
+            is_open = true;
+        }
+        else if (command == "stop") {
+            if (!is_open) continue;
+            std::cout << "stop.\n";
+            //ser.on_receive([](auto,auto)->void {});
+            //ser.on_error([](auto)->void {});
+            ser.stop();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+ 
+            is_open = false;
+        }
+
+        if (is_open == true)
+        {
+            ser.write(command);
+        }
+
+    } while (command != "close");
+
     return 0;
-
 }
